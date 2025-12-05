@@ -1,0 +1,21 @@
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Data files
+data/*.jpg
+!data/contacts.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,29 @@
+{
+  "name": "group-turbine-bot",
+  "version": "1.0.0",
+  "description": "Telegram бот для группы мониторинга турбин",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "get-id": "node get_group_id.js",
+    "test": "node test_simple.js",
+    "check": "node check_bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "turbine",
+    "group"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.64.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
