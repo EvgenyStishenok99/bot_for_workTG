@@ -45,43 +45,19 @@ async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
   return bot.sendMessage(chatId, text, {
     ...MAIN_KEYBOARD,
     ...options,
-    reply_markup: {
-      ...MAIN_KEYBOARD.reply_markup,
-      ...options.reply_markup
-    }
-  });
-}
-
-async function editMessageWithPersistentKeyboard(chatId, messageId, text, options = {}) {
-  return bot.editMessageText(text, {
-    chat_id: chatId,
-    message_id: messageId,
-    ...options,
     reply_markup: MAIN_KEYBOARD.reply_markup
   });
 }
 
-// ==================== ПРИВЕТСТВИЕ И ПОКАЗ КНОПОК ====================
+// ==================== ПРИВЕТСТВИЕ ====================
 bot.onText(/\/start/, async (msg) => {
   // Удаляем сообщение с командой /start
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
   await sendMessageWithPersistentKeyboard(msg.chat.id,
     `👋 Привет, ${msg.from.first_name}!\n\n` +
-    `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*\n\n` +
-    `Выберите нужную функцию из кнопок ниже:\n` +
-    `Кнопки будут ВСЕГДА доступны!`,
+    `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*`,
     { parse_mode: 'Markdown' }
-  );
-});
-
-bot.onText(/\/menu|\/buttons/, async (msg) => {
-  // Удаляем сообщение с командой
-  await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  await sendMessageWithPersistentKeyboard(msg.chat.id,
-    `🎛️ Кнопки ВСЕГДА видны внизу экрана!\n` +
-    `Просто нажмите на нужную функцию:`
   );
 });
 
@@ -305,7 +281,7 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
 
   const initialRPM = generateRPM();
 
-  // Отправляем сообщение с мониторингом (БЕЗ КЛАВИАТУРЫ, чтобы не мешала)
+  // Отправляем сообщение с мониторингом
   const turbineMsg = await bot.sendMessage(chatId,
     `⚙️ *Мониторинг для ${userName}*\n\n` +
     `🎯 Текущие обороты: *${initialRPM} об/мин*\n\n` +
@@ -334,11 +310,15 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     const newRPM = generateRPM();
 
     try {
-      await editMessageWithPersistentKeyboard(chatId, messageId,
+      await bot.editMessageText(
         `⚙️ *Мониторинг для ${userName}*\n\n` +
         `🎯 Текущие обороты: *${newRPM} об/мин*\n\n` +
         `📊 [${createProgressBar(newRPM)}] ${Math.round(((newRPM - 6896) / (6960 - 6896)) * 100)}%`,
-        { parse_mode: 'Markdown' }
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown'
+        }
       );
 
       // Проверяем прошло ли 25 секунд (останавливаем за 5 сек до удаления)
@@ -385,25 +365,6 @@ bot.onText(/\/admin/, async (msg) => {
   }, 10000);
 });
 
-bot.onText(/\/help/, async (msg) => {
-  // Удаляем сообщение с командой
-  await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  const helpMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
-    `🎛️ *ПОМОЩЬ*\n\n` +
-    `• 📅 График текущего месяца\n` +
-    `• 🔄 График на цикл\n` +
-    `• 👥 Контакты сотрудников\n` +
-    `• ⚙️ Обороты турбины (удаление через 30 сек)\n\n` +
-    `Кнопки ВСЕГДА видны внизу экрана!`,
-    { parse_mode: 'Markdown' }
-  );
-
-  setTimeout(() => {
-    safeDeleteMessage(msg.chat.id, helpMsg.message_id);
-  }, 15000);
-});
-
 // ==================== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ГРУППЫ ====================
 bot.on('new_chat_members', (msg) => {
   const newMembers = msg.new_chat_members;
@@ -419,7 +380,6 @@ bot.on('new_chat_members', (msg) => {
         `• Показывать графики работы 📅\n` +
         `• Хранить контакты сотрудников 👥\n` +
         `• Показывать обороты турбины ⚙️\n\n` +
-        `Кнопки всегда доступны внизу экрана!\n` +
         `*Приятного общения в группе!*`,
         { parse_mode: 'Markdown' }
       );
@@ -450,6 +410,28 @@ bot.on('message', async (msg) => {
   if (hasOurButtons) {
     await safeDeleteMessage(msg.chat.id, msg.message_id);
   }
+});
+
+// ==================== ОБНОВЛЕНИЕ КНОПОК У СУЩЕСТВУЮЩИХ ПОЛЬЗОВАТЕЛЕЙ ====================
+// При любом сообщении от пользователя проверяем есть ли у него кнопки
+bot.on('message', async (msg) => {
+  if (msg.from.is_bot) return;
+
+  // Отправляем пустое сообщение с клавиатурой, если у пользователя нет кнопок
+  // Это "принудительно" показывает кнопки
+  setTimeout(async () => {
+    try {
+      // Отправляем невидимое сообщение с клавиатурой
+      const forceKeyboardMsg = await bot.sendMessage(msg.chat.id, ' ', {
+        reply_markup: MAIN_KEYBOARD.reply_markup
+      });
+
+      // Сразу удаляем это сообщение
+      await safeDeleteMessage(msg.chat.id, forceKeyboardMsg.message_id);
+    } catch (error) {
+      // Игнорируем ошибки
+    }
+  }, 100);
 });
 
 // ==================== ПРОВЕРКА ФАЙЛОВ ПРИ ЗАПУСКЕ ====================
