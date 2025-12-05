@@ -11,7 +11,7 @@ console.log('🚀 Бот запущен на Railway');
 console.log('👑 Админ ID:', ADMIN_ID);
 console.log('📁 Папка данных:', DATA_DIR);
 
-// Главная клавиатура (ВСЕГДА отображается, НИКОГДА не скрывается)
+// Главная клавиатура (ВСЕГДА отображается)
 const MAIN_KEYBOARD = {
   reply_markup: {
     keyboard: [
@@ -23,7 +23,7 @@ const MAIN_KEYBOARD = {
     resize_keyboard: true,
     one_time_keyboard: false,
     selective: false,
-    is_persistent: true // Клавиатура сохраняется всегда
+    is_persistent: true
   }
 };
 
@@ -41,7 +41,6 @@ async function safeDeleteMessage(chatId, messageId) {
   });
 }
 
-// Функция для отправки сообщений с ВСЕГДА видимой клавиатурой
 async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
   return bot.sendMessage(chatId, text, {
     ...MAIN_KEYBOARD,
@@ -53,7 +52,6 @@ async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
   });
 }
 
-// Функция для редактирования сообщений с сохранением клавиатуры
 async function editMessageWithPersistentKeyboard(chatId, messageId, text, options = {}) {
   return bot.editMessageText(text, {
     chat_id: chatId,
@@ -65,6 +63,9 @@ async function editMessageWithPersistentKeyboard(chatId, messageId, text, option
 
 // ==================== ПРИВЕТСТВИЕ И ПОКАЗ КНОПОК ====================
 bot.onText(/\/start/, async (msg) => {
+  // Удаляем сообщение с командой /start
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   await sendMessageWithPersistentKeyboard(msg.chat.id,
     `👋 Привет, ${msg.from.first_name}!\n\n` +
     `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*\n\n` +
@@ -75,6 +76,9 @@ bot.onText(/\/start/, async (msg) => {
 });
 
 bot.onText(/\/menu|\/buttons/, async (msg) => {
+  // Удаляем сообщение с командой
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   await sendMessageWithPersistentKeyboard(msg.chat.id,
     `🎛️ Кнопки ВСЕГДА видны внизу экрана!\n` +
     `Просто нажмите на нужную функцию:`
@@ -100,18 +104,24 @@ bot.on('photo', async (msg) => {
     fileName = 'schedule_cycle.jpg';
     description = 'График на цикл';
   } else {
-    await sendMessageWithPersistentKeyboard(msg.chat.id,
+    // Удаляем сообщение с фото
+    await safeDeleteMessage(msg.chat.id, msg.message_id);
+
+    const askMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `📝 Укажите в подписи к фото:\n` +
       `• "текущий" - для графика текущего месяца\n` +
       `• "цикл" - для графика на цикл`
     );
+
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, askMsg.message_id);
+    }, 10000);
     return;
   }
 
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
 
-    // Загрузка файла
     const file = await bot.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
 
@@ -123,30 +133,39 @@ bot.on('photo', async (msg) => {
 
     console.log(`✅ ${description} загружен, размер: ${buffer.byteLength} байт`);
 
+    // Удаляем сообщение с фото
+    await safeDeleteMessage(msg.chat.id, msg.message_id);
+
     const confirmMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `✅ *${description} успешно загружен!*`,
       { parse_mode: 'Markdown' }
     );
 
-    // Удаляем подтверждение через 10 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, confirmMsg.message_id);
-    }, 10000);
+    }, 5000);
 
   } catch (error) {
     console.error('❌ Ошибка загрузки файла:', error);
+
+    // Удаляем сообщение с фото при ошибке
+    await safeDeleteMessage(msg.chat.id, msg.message_id);
+
     const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `❌ Ошибка загрузки файла`
     );
 
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, errorMsg.message_id);
-    }, 10000);
+    }, 5000);
   }
 });
 
 // ==================== КОНТАКТЫ СОТРУДНИКОВ ====================
 bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   try {
     const filePath = path.join(DATA_DIR, 'contacts.json');
     const data = await fs.readFile(filePath, 'utf8');
@@ -186,6 +205,9 @@ bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg
 
 // ==================== ГРАФИКИ ====================
 bot.onText(/📅 График текущего месяца/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const filePath = path.join(DATA_DIR, 'schedule_current.jpg');
 
   try {
@@ -219,6 +241,9 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
 });
 
 bot.onText(/🔄 График на цикл/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const filePath = path.join(DATA_DIR, 'schedule_cycle.jpg');
 
   try {
@@ -252,6 +277,9 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
 
 // ==================== ОБОРОТЫ ТУРБИНЫ (удаление через 30 секунд) ====================
 bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const userId = msg.from.id;
   const chatId = msg.chat.id;
   const userName = msg.from.first_name;
@@ -337,7 +365,14 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
 
 // ==================== АДМИН КОМАНДЫ ====================
 bot.onText(/\/admin/, async (msg) => {
-  if (msg.from.id.toString() !== ADMIN_ID) return;
+  if (msg.from.id.toString() !== ADMIN_ID) {
+    // Удаляем сообщение от не-админа
+    await safeDeleteMessage(msg.chat.id, msg.message_id);
+    return;
+  }
+
+  // Удаляем сообщение с командой
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
 
   const adminMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
     `👑 *Панель администратора*\n\n` +
@@ -351,6 +386,9 @@ bot.onText(/\/admin/, async (msg) => {
 });
 
 bot.onText(/\/help/, async (msg) => {
+  // Удаляем сообщение с командой
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const helpMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
     `🎛️ *ПОМОЩЬ*\n\n` +
     `• 📅 График текущего месяца\n` +
@@ -389,29 +427,28 @@ bot.on('new_chat_members', (msg) => {
   });
 });
 
-// ==================== УВЕДОМЛЕНИЕ О РАБОТЕ КНОПОК ====================
-// При первом сообщении в чате показываем подсказку
+// ==================== УДАЛЕНИЕ СООБЩЕНИЙ С КНОПКАМИ ОТ ПОЛЬЗОВАТЕЛЕЙ ====================
 bot.on('message', async (msg) => {
-  // Только первое сообщение от пользователя
-  if (msg.text === '/start' || msg.text === '/menu') return;
+  // Пропускаем сообщения от бота
+  if (msg.from.is_bot) return;
 
-  // Проверяем, есть ли у пользователя уже кнопки
-  const hasPersistentKeyboard = msg.reply_markup &&
-    msg.reply_markup.keyboard &&
-    msg.reply_markup.keyboard.length > 0;
+  // Пропускаем фото от администратора
+  if (msg.photo && msg.from.id.toString() === ADMIN_ID) return;
 
-  if (!hasPersistentKeyboard && !msg.from.is_bot) {
-    // Отправляем напоминание о кнопках
-    const reminder = await sendMessageWithPersistentKeyboard(msg.chat.id,
-      `💡 *Напоминание*\n\n` +
-      `Кнопки управления ботом теперь ВСЕГДА видны внизу экрана!\n` +
-      `Просто нажмите на нужную функцию.`,
-      { parse_mode: 'Markdown' }
-    );
+  // Удаляем команды (они уже обрабатываются выше)
+  if (msg.text?.startsWith('/')) return;
 
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, reminder.message_id);
-    }, 10000);
+  // Проверяем, содержит ли сообщение кнопки из нашей клавиатуры
+  const hasOurButtons = msg.text && (
+    msg.text.includes('📅 График текущего месяца') ||
+    msg.text.includes('🔄 График на цикл') ||
+    msg.text.includes('👥 Контакты сотрудников') ||
+    msg.text.includes('⚙️ Обороты турбины')
+  );
+
+  // Удаляем сообщения пользователей с нашими кнопками
+  if (hasOurButtons) {
+    await safeDeleteMessage(msg.chat.id, msg.message_id);
   }
 });
 
@@ -461,6 +498,7 @@ async function checkFilesOnStartup() {
 checkFilesOnStartup().then(() => {
   console.log('\n✅ Бот готов к работе!');
   console.log('🎯 4 кнопки ВСЕГДА видны в интерфейсе');
+  console.log('🗑️ Удаляются: сообщения пользователей с кнопками');
   console.log('⏱️ Мониторинг турбины: удаление через 30 секунд');
   console.log('⏱️ Контакты/графики: удаление через 30 секунд');
   console.log('👑 Администратор: 401369992');
