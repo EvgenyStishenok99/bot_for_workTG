@@ -4,68 +4,99 @@ const path = require('path');
 
 // ==================== КОНФИГУРАЦИЯ ====================
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8533299703:AAGxj_5pjBFrmuYQnXwMROQF6MQ7ePPezDM';
-const ADMIN_ID = '401369992'; // Ваш личный ID
+const ADMIN_ID = '401369992';
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, 'data');
 
 console.log('🚀 Бот запущен на Railway');
 console.log('👑 Админ ID:', ADMIN_ID);
 console.log('📁 Папка данных:', DATA_DIR);
 
+// Главная клавиатура (ВСЕГДА отображается)
+const MAIN_KEYBOARD = {
+  reply_markup: {
+    keyboard: [
+      ['📅 График текущего месяца'],
+      ['🔄 График на цикл'],
+      ['👥 Контакты сотрудников'],
+      ['⚙️ Обороты турбины']
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false, // Кнопки НЕ скрываются после нажатия
+    selective: false
+  }
+};
+
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // ==================== ХРАНИЛИЩА ====================
-const userTimers = new Map(); // Для мониторинга оборотов
-const deletionTimers = new Map(); // Для автоудаления
-const userMessageQueue = new Map(); // Очередь сообщений пользователя
+const userTimers = new Map();
+const userMessageQueue = new Map();
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-// Безопасное удаление сообщений
-function safeDeleteMessage(chatId, messageId) {
+async function safeDeleteMessage(chatId, messageId) {
   return bot.deleteMessage(chatId, messageId).catch(error => {
-    // Игнорируем ошибки удаления
     if (!error.message.includes('message to delete not found')) {
       console.log(`⚠️ Не удалось удалить сообщение ${messageId}:`, error.message);
     }
   });
 }
 
-// Удаление старых сообщений пользователя перед отправкой нового
 async function cleanupUserMessages(chatId, userId) {
   const key = `${chatId}_${userId}`;
-
   if (userMessageQueue.has(key)) {
     const messageIds = userMessageQueue.get(key);
-
-    // Удаляем все предыдущие сообщения этого пользователя
     for (const messageId of messageIds) {
       await safeDeleteMessage(chatId, messageId);
     }
-
-    // Очищаем очередь
     userMessageQueue.delete(key);
   }
 }
 
-// Добавление сообщения в очередь пользователя
 function addToUserQueue(chatId, userId, messageId) {
   const key = `${chatId}_${userId}`;
-
   if (!userMessageQueue.has(key)) {
     userMessageQueue.set(key, []);
   }
-
   userMessageQueue.get(key).push(messageId);
 
-  // Ограничиваем очередь 5 сообщениями (удаляем самые старые)
   if (userMessageQueue.get(key).length > 5) {
     const oldestMessageId = userMessageQueue.get(key).shift();
     safeDeleteMessage(chatId, oldestMessageId);
   }
 }
 
+// ==================== ПРИВЕТСТВИЕ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ ====================
+bot.onText(/\/start/, async (msg) => {
+  await cleanupUserMessages(msg.chat.id, msg.from.id);
+
+  const welcomeMsg = await bot.sendMessage(msg.chat.id,
+    `👋 Привет, ${msg.from.first_name}!\n\n` +
+    `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*\n\n` +
+    `Выберите нужную функцию из кнопок ниже:`,
+    {
+      parse_mode: 'Markdown',
+      ...MAIN_KEYBOARD
+    }
+  );
+
+  addToUserQueue(msg.chat.id, msg.from.id, welcomeMsg.message_id);
+});
+
+// ==================== ПОКАЗ КНОПОК ПО КОМАНДЕ ====================
+bot.onText(/\/menu|\/buttons/, async (msg) => {
+  await cleanupUserMessages(msg.chat.id, msg.from.id);
+
+  const menuMsg = await bot.sendMessage(msg.chat.id,
+    `🎛️ Кнопки доступны внизу экрана\n` +
+    `Просто нажмите на нужную функцию:`,
+    MAIN_KEYBOARD
+  );
+
+  addToUserQueue(msg.chat.id, msg.from.id, menuMsg.message_id);
+});
+
 // ==================== ЗАГРУЗКА КАРТИНОК АДМИНИСТРАТОРОМ ====================
 bot.on('photo', async (msg) => {
-  // Проверяем что это администратор
   if (msg.from.id.toString() !== ADMIN_ID) {
     console.log(`⛔ Попытка загрузки от не-админа: ${msg.from.id}`);
     return;
@@ -83,109 +114,61 @@ bot.on('photo', async (msg) => {
     fileName = 'schedule_cycle.jpg';
     description = 'График на цикл';
   } else {
-    // Удаляем сообщение пользователя сразу
-    await safeDeleteMessage(msg.chat.id, msg.message_id);
-
     const askMsg = await bot.sendMessage(msg.chat.id,
       `📝 Укажите в подписи к фото:\n` +
       `• "текущий" - для графика текущего месяца\n` +
-      `• "цикл" - для графика на цикла`,
-      { reply_to_message_id: null }
+      `• "цикл" - для графика на цикл`,
+      MAIN_KEYBOARD
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, askMsg.message_id);
-
-    // Удаляем через 10 секунд
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, askMsg.message_id);
-    }, 10000);
-
+    setTimeout(() => safeDeleteMessage(msg.chat.id, askMsg.message_id), 10000);
     return;
   }
 
   try {
-    // Создаем папку если нет
     await fs.mkdir(DATA_DIR, { recursive: true });
 
-    // Скачиваем файл
-    const fileStream = bot.getFileStream(fileId);
+    // Исправленная загрузка файла
+    const file = await bot.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
+
+    // Скачиваем через fetch
+    const response = await fetch(fileUrl);
+    const buffer = await response.arrayBuffer();
+
+    // Сохраняем файл
     const filePath = path.join(DATA_DIR, fileName);
-    const writeStream = fs.createWriteStream(filePath);
+    await fs.writeFile(filePath, Buffer.from(buffer));
 
-    await new Promise((resolve, reject) => {
-      fileStream.pipe(writeStream);
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-    });
+    console.log(`✅ ${description} загружен, размер: ${buffer.byteLength} байт`);
 
-    console.log(`✅ ${description} загружен администратором ${msg.from.first_name}`);
-
-    // Удаляем сообщение пользователя с фото
-    await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-    // Отправляем подтверждение
     const confirmMsg = await bot.sendMessage(msg.chat.id,
       `✅ *${description} успешно загружен!*`,
-      { parse_mode: 'Markdown' }
+      {
+        parse_mode: 'Markdown',
+        ...MAIN_KEYBOARD
+      }
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, confirmMsg.message_id);
-
-    // Удаляем подтверждение через 5 секунд
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, confirmMsg.message_id);
-    }, 5000);
+    setTimeout(() => safeDeleteMessage(msg.chat.id, confirmMsg.message_id), 5000);
 
   } catch (error) {
     console.error('❌ Ошибка загрузки файла:', error);
-
     const errorMsg = await bot.sendMessage(msg.chat.id,
       `❌ Ошибка загрузки файла`,
-      { reply_to_message_id: null }
+      MAIN_KEYBOARD
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, errorMsg.message_id);
-
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
-    }, 5000);
+    setTimeout(() => safeDeleteMessage(msg.chat.id, errorMsg.message_id), 5000);
   }
-});
-
-// ==================== ГЛАВНОЕ МЕНЮ ====================
-bot.onText(/\/menu|\/start/, async (msg) => {
-  const keyboard = {
-    reply_markup: {
-      keyboard: [
-        ['📅 График текущего месяца'],
-        ['🔄 График на цикл'],
-        ['👥 Контакты сотрудников'],
-        ['⚙️ Обороты турбины']
-      ],
-      resize_keyboard: true
-    }
-  };
-
-  // Очищаем старые сообщения пользователя
-  await cleanupUserMessages(msg.chat.id, msg.from.id);
-
-  const menuMsg = await bot.sendMessage(msg.chat.id,
-    `👋 ${msg.from.first_name}, выберите функцию:`,
-    {
-      ...keyboard,
-      reply_to_message_id: null
-    }
-  );
-
-  addToUserQueue(msg.chat.id, msg.from.id, menuMsg.message_id);
 });
 
 // ==================== КОНТАКТЫ СОТРУДНИКОВ ====================
 bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg) => {
-  // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  // Очищаем старые сообщения пользователя
   await cleanupUserMessages(msg.chat.id, msg.from.id);
 
   try {
@@ -205,12 +188,12 @@ bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg
     });
 
     const contactsMsg = await bot.sendMessage(msg.chat.id, message, {
-      parse_mode: 'Markdown'
+      parse_mode: 'Markdown',
+      ...MAIN_KEYBOARD
     });
 
     addToUserQueue(msg.chat.id, msg.from.id, contactsMsg.message_id);
 
-    // Удаляем через 30 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, contactsMsg.message_id);
     }, 30000);
@@ -218,7 +201,8 @@ bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg
   } catch (error) {
     console.error('Ошибка загрузки контактов:', error);
     const errorMsg = await bot.sendMessage(msg.chat.id,
-      `📞 ${msg.from.first_name}, контакты загружаются...`
+      `📞 ${msg.from.first_name}, контакты загружаются...`,
+      MAIN_KEYBOARD
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, errorMsg.message_id);
@@ -231,10 +215,7 @@ bot.onText(/👥 Контакты сотрудников|\/contacts/, async (msg
 
 // ==================== ГРАФИКИ ====================
 bot.onText(/📅 График текущего месяца/, async (msg) => {
-  // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  // Очищаем старые сообщения пользователя
   await cleanupUserMessages(msg.chat.id, msg.from.id);
 
   const filePath = path.join(DATA_DIR, 'schedule_current.jpg');
@@ -242,13 +223,16 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
   try {
     await fs.access(filePath);
 
-    const photoMsg = await bot.sendPhoto(msg.chat.id, filePath, {
-      caption: `📅 График для ${msg.from.first_name}`
+    // Читаем файл как Buffer
+    const photoBuffer = await fs.readFile(filePath);
+
+    const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
+      caption: `📅 График для ${msg.from.first_name}`,
+      ...MAIN_KEYBOARD
     });
 
     addToUserQueue(msg.chat.id, msg.from.id, photoMsg.message_id);
 
-    // Удаляем через 30 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, photoMsg.message_id);
     }, 30000);
@@ -256,7 +240,13 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
   } catch (error) {
     console.error('График не найден:', error);
     const errorMsg = await bot.sendMessage(msg.chat.id,
-      `📅 ${msg.from.first_name}, график еще не загружен`
+      `📅 ${msg.from.first_name}, график еще не загружен\n\n` +
+      `*Как загрузить:*\n` +
+      `Отправьте фото с подписью "текущий"`,
+      {
+        parse_mode: 'Markdown',
+        ...MAIN_KEYBOARD
+      }
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, errorMsg.message_id);
@@ -268,10 +258,7 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
 });
 
 bot.onText(/🔄 График на цикл/, async (msg) => {
-  // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  // Очищаем старые сообщения пользователя
   await cleanupUserMessages(msg.chat.id, msg.from.id);
 
   const filePath = path.join(DATA_DIR, 'schedule_cycle.jpg');
@@ -279,20 +266,28 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
   try {
     await fs.access(filePath);
 
-    const photoMsg = await bot.sendPhoto(msg.chat.id, filePath, {
-      caption: `🔄 График для ${msg.from.first_name}`
+    const photoBuffer = await fs.readFile(filePath);
+
+    const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
+      caption: `🔄 График для ${msg.from.first_name}`,
+      ...MAIN_KEYBOARD
     });
 
     addToUserQueue(msg.chat.id, msg.from.id, photoMsg.message_id);
 
-    // Удаляем через 30 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, photoMsg.message_id);
     }, 30000);
 
   } catch (error) {
     const errorMsg = await bot.sendMessage(msg.chat.id,
-      `🔄 ${msg.from.first_name}, график еще не загружен`
+      `🔄 ${msg.from.first_name}, график еще не загружен\n\n` +
+      `*Как загрузить:*\n` +
+      `Отправьте фото с подписью "цикл"`,
+      {
+        parse_mode: 'Markdown',
+        ...MAIN_KEYBOARD
+      }
     );
 
     addToUserQueue(msg.chat.id, msg.from.id, errorMsg.message_id);
@@ -305,7 +300,6 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
 
 // ==================== ОБОРОТЫ ТУРБИНЫ ====================
 bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
-  // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
   const userId = msg.from.id;
@@ -313,7 +307,6 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
   const userName = msg.from.first_name;
   const key = `${chatId}_${userId}`;
 
-  // Останавливаем предыдущий мониторинг
   if (userTimers.has(key)) {
     const { updateTimer, messageId } = userTimers.get(key);
     if (updateTimer) clearInterval(updateTimer);
@@ -321,7 +314,6 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     userTimers.delete(key);
   }
 
-  // Очищаем старые сообщения пользователя
   await cleanupUserMessages(msg.chat.id, msg.from.id);
 
   const generateRPM = () => Math.floor(Math.random() * (6960 - 6896 + 1)) + 6896;
@@ -338,7 +330,10 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     `⚙️ *Мониторинг для ${userName}*\n\n` +
     `🎯 Текущие обороты: *${initialRPM} об/мин*\n\n` +
     `📊 [${createProgressBar(initialRPM)}] ${Math.round(((initialRPM - 6896) / (6960 - 6896)) * 100)}%`,
-    { parse_mode: 'Markdown' }
+    {
+      parse_mode: 'Markdown',
+      ...MAIN_KEYBOARD
+    }
   );
 
   const messageId = turbineMsg.message_id;
@@ -350,7 +345,6 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     userTimers.delete(key);
   }, 30000);
 
-  // Сохраняем данные
   userTimers.set(key, {
     deletionTimer,
     messageId,
@@ -358,7 +352,7 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     startTime: Date.now()
   });
 
-  // Обновляем сообщение каждые 2 секунды
+  // Обновление каждые 2 секунды
   const updateTimer = setInterval(async () => {
     const newRPM = generateRPM();
 
@@ -374,16 +368,13 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
         }
       );
 
-      // Проверяем прошло ли 25 секунд (останавливаем за 5 сек до удаления)
       const userData = userTimers.get(key);
       if (userData && Date.now() - userData.startTime >= 25000) {
         clearInterval(updateTimer);
-        const updatedData = userTimers.get(key);
-        userTimers.set(key, { ...updatedData, updateTimer: null });
+        userTimers.set(key, { ...userData, updateTimer: null });
       }
 
     } catch (error) {
-      // Сообщение уже удалено - останавливаем таймеры
       clearInterval(updateTimer);
       if (userTimers.has(key)) {
         const userData = userTimers.get(key);
@@ -393,7 +384,6 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
     }
   }, 2000);
 
-  // Сохраняем таймер обновления
   const userData = userTimers.get(key);
   userTimers.set(key, { ...userData, updateTimer });
 });
@@ -401,20 +391,17 @@ bot.onText(/⚙️ Обороты турбины|\/turbine/, async (msg) => {
 // ==================== АДМИН КОМАНДЫ ====================
 bot.onText(/\/admin/, async (msg) => {
   if (msg.from.id.toString() !== ADMIN_ID) {
-    await safeDeleteMessage(msg.chat.id, msg.message_id);
     return;
   }
-
-  await safeDeleteMessage(msg.chat.id, msg.message_id);
 
   const adminMsg = await bot.sendMessage(msg.chat.id,
     `👑 *Панель администратора*\n\n` +
     `📊 Активных мониторингов: ${userTimers.size}\n` +
-    `👥 Очередь сообщений: ${userMessageQueue.size}\n\n` +
-    `*Доступные команды:*\n` +
-    `/cleartimers - очистить все таймеры\n` +
-    `/cleanqueue - очистить очередь сообщений`,
-    { parse_mode: 'Markdown' }
+    `👥 Очередь сообщений: ${userMessageQueue.size}`,
+    {
+      parse_mode: 'Markdown',
+      ...MAIN_KEYBOARD
+    }
   );
 
   addToUserQueue(msg.chat.id, msg.from.id, adminMsg.message_id);
@@ -424,107 +411,52 @@ bot.onText(/\/admin/, async (msg) => {
   }, 10000);
 });
 
-bot.onText(/\/cleartimers/, async (msg) => {
-  if (msg.from.id.toString() !== ADMIN_ID) {
-    await safeDeleteMessage(msg.chat.id, msg.message_id);
-    return;
-  }
-
-  await safeDeleteMessage(msg.chat.id, msg.message_id);
-
-  let cleared = 0;
-
-  // Очищаем таймеры мониторинга
-  userTimers.forEach(({ updateTimer, deletionTimer }, key) => {
-    if (updateTimer) {
-      clearInterval(updateTimer);
-      cleared++;
+bot.onText(/\/help/, async (msg) => {
+  const helpMsg = await bot.sendMessage(msg.chat.id,
+    `🎛️ *ПОМОЩЬ*\n\n` +
+    `• 📅 График текущего месяца\n` +
+    `• 🔄 График на цикл\n` +
+    `• 👥 Контакты сотрудников\n` +
+    `• ⚙️ Обороты турбины (30 сек)\n\n` +
+    `Кнопки всегда видны внизу экрана!`,
+    {
+      parse_mode: 'Markdown',
+      ...MAIN_KEYBOARD
     }
-    if (deletionTimer) {
-      clearTimeout(deletionTimer);
-      cleared++;
-    }
-
-    // Удаляем сообщение мониторинга если есть
-    const { messageId } = userTimers.get(key);
-    if (messageId) {
-      const [chatId, userId] = key.split('_');
-      safeDeleteMessage(chatId, messageId);
-    }
-  });
-
-  userTimers.clear();
-
-  // Очищаем таймеры удаления
-  deletionTimers.forEach(timer => {
-    clearTimeout(timer);
-    cleared++;
-  });
-
-  deletionTimers.clear();
-
-  const clearMsg = await bot.sendMessage(msg.chat.id,
-    `🧹 Очищено ${cleared} таймеров`
   );
 
-  addToUserQueue(msg.chat.id, msg.from.id, clearMsg.message_id);
+  addToUserQueue(msg.chat.id, msg.from.id, helpMsg.message_id);
 
   setTimeout(() => {
-    safeDeleteMessage(msg.chat.id, clearMsg.message_id);
-  }, 5000);
+    safeDeleteMessage(msg.chat.id, helpMsg.message_id);
+  }, 15000);
 });
 
-bot.onText(/\/cleanqueue/, async (msg) => {
-  if (msg.from.id.toString() !== ADMIN_ID) {
-    await safeDeleteMessage(msg.chat.id, msg.message_id);
-    return;
-  }
+// ==================== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ГРУППЫ ====================
+bot.on('new_chat_members', (msg) => {
+  const newMembers = msg.new_chat_members;
 
-  await safeDeleteMessage(msg.chat.id, msg.message_id);
+  newMembers.forEach(member => {
+    // Не приветствуем самого бота
+    if (member.id.toString() === bot.token.split(':')[0]) return;
 
-  let deleted = 0;
-
-  // Удаляем все сообщения из очереди
-  userMessageQueue.forEach((messageIds, key) => {
-    const [chatId, userId] = key.split('_');
-
-    for (const messageId of messageIds) {
-      safeDeleteMessage(chatId, messageId);
-      deleted++;
-    }
+    setTimeout(() => {
+      bot.sendMessage(msg.chat.id,
+        `👋 Добро пожаловать в группу, *${member.first_name}*!\n\n` +
+        `*Я бот-помощник этой группы.*\n\n` +
+        `📋 *Что я умею:*\n` +
+        `• Показывать графики работы 📅\n` +
+        `• Хранить контакты сотрудников 👥\n` +
+        `• Показывать обороты турбины ⚙️\n\n` +
+        `Нажмите /start для получения кнопок меню!\n` +
+        `*Приятного общения в группе!*`,
+        {
+          parse_mode: 'Markdown',
+          ...MAIN_KEYBOARD
+        }
+      );
+    }, 1000);
   });
-
-  userMessageQueue.clear();
-
-  const cleanMsg = await bot.sendMessage(msg.chat.id,
-    `🗑️ Удалено ${deleted} сообщений из очереди`
-  );
-
-  addToUserQueue(msg.chat.id, msg.from.id, cleanMsg.message_id);
-
-  setTimeout(() => {
-    safeDeleteMessage(msg.chat.id, cleanMsg.message_id);
-  }, 5000);
-});
-
-// ==================== ОЧИСТКА ПРИ ВЫХОДЕ ====================
-process.on('SIGINT', () => {
-  console.log('\n🛑 Останавливаю бота...');
-
-  // Останавливаем все таймеры
-  userTimers.forEach(({ updateTimer, deletionTimer }) => {
-    if (updateTimer) clearInterval(updateTimer);
-    if (deletionTimer) clearTimeout(deletionTimer);
-  });
-
-  deletionTimers.forEach(timer => clearTimeout(timer));
-
-  userTimers.clear();
-  deletionTimers.clear();
-  userMessageQueue.clear();
-
-  console.log('✅ Все таймеры остановлены');
-  process.exit(0);
 });
 
 // ==================== ПРОВЕРКА ФАЙЛОВ ПРИ ЗАПУСКЕ ====================
@@ -553,6 +485,18 @@ async function checkFilesOnStartup() {
       console.log('✅ contacts.json создан по умолчанию');
     }
 
+    // Проверяем картинки
+    const images = ['schedule_current.jpg', 'schedule_cycle.jpg'];
+    for (const image of images) {
+      const imagePath = path.join(DATA_DIR, image);
+      try {
+        await fs.access(imagePath);
+        console.log(`✅ ${image} существует`);
+      } catch {
+        console.log(`⚠️ ${image} не найден`);
+      }
+    }
+
   } catch (error) {
     console.error('❌ Ошибка проверки файлов:', error);
   }
@@ -561,9 +505,25 @@ async function checkFilesOnStartup() {
 // ==================== ЗАПУСК БОТА ====================
 checkFilesOnStartup().then(() => {
   console.log('\n✅ Бот готов к работе!');
-  console.log('🎯 Сообщения удаляются сразу при нажатии');
+  console.log('🎯 4 кнопки всегда видны в интерфейсе');
   console.log('⏱️ Обороты турбины: удаление через 30 сек');
   console.log('📞 Контакты/графики: удаление через 30 сек');
   console.log('👑 Администратор: 401369992');
   console.log('='.repeat(50));
+
+  // Отправляем уведомление о запуске
+  bot.getMe().then(me => {
+    console.log(`🤖 Бот: ${me.first_name} (@${me.username})`);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('\n🛑 Останавливаю бота...');
+  userTimers.forEach(({ updateTimer, deletionTimer }) => {
+    if (updateTimer) clearInterval(updateTimer);
+    if (deletionTimer) clearTimeout(deletionTimer);
+  });
+  userMessageQueue.clear();
+  console.log('✅ Все таймеры остановлены');
+  process.exit(0);
 });
