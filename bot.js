@@ -66,12 +66,10 @@ bot.onText(/\/start/, async (msg) => {
   // Удаляем только сообщение с командой /start
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
-  // await sendMessageWithPersistentKeyboard(msg.chat.id,
-  //   `👋 Привет, ${msg.from.first_name}!\n\n` +
-  //   `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*\n\n` +
-  //   `Используйте кнопки ниже для работы с системой:`,
-  //   { parse_mode: 'Markdown' }
-  // );
+  await sendMessageWithPersistentKeyboard(msg.chat.id,
+
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // ==================== ЗАГРУЗКА КАРТИНОК АДМИНИСТРАТОРОМ ====================
