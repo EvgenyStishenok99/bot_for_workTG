@@ -1,25 +1,18 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs').promises;
 const path = require('path');
+const axios = require('axios');
 
 // ==================== КОНФИГУРАЦИЯ ====================
-// НИКОГДА не храните токен в коде! Используйте переменные окружения
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_ID || '401369992';
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8533299703:AAGxj_5pjBFrmuYQnXwMROQF6MQ7ePPezDM';
+const ADMIN_ID = '401369992';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-
-// Проверка токена
-if (!TOKEN) {
-  console.error('❌ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен!');
-  console.error('ℹ️ Установите переменную окружения TELEGRAM_BOT_TOKEN');
-  process.exit(1);
-}
 
 console.log('🚀 Бот запущен');
 console.log('👑 Админ ID:', ADMIN_ID);
 console.log('📁 Папка данных:', DATA_DIR);
 
-// Главная клавиатура
+// Главная клавиатура (ВСЕГДА в поле ввода текста)
 const MAIN_KEYBOARD = {
   keyboard: [
     ['📅 График текущего месяца'],
@@ -28,17 +21,14 @@ const MAIN_KEYBOARD = {
     ['⚙️ Обороты турбины']
   ],
   resize_keyboard: true,
-  one_time_keyboard: false
+  one_time_keyboard: false,
+  is_persistent: true
 };
 
 const bot = new TelegramBot(TOKEN, {
   polling: true,
-  // Добавляем обработку ошибок
   request: {
-    timeout: 10000,
-    agentOptions: {
-      keepAlive: true
-    }
+    timeout: 10000
   }
 });
 
@@ -50,6 +40,7 @@ async function safeDeleteMessage(chatId, messageId) {
   try {
     await bot.deleteMessage(chatId, messageId);
   } catch (error) {
+    // Игнорируем ошибки "сообщение не найдено"
     if (!error.message.includes('message to delete not found')) {
       console.log(`⚠️ Не удалось удалить сообщение ${messageId}:`, error.message);
     }
@@ -62,8 +53,8 @@ async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
     reply_markup: MAIN_KEYBOARD
   };
 
-  // Убираем разметку, если нет parse_mode
-  if (!options.parse_mode && text.includes('*')) {
+  // Если есть разметка Markdown, но не указан parse_mode
+  if (!options.parse_mode && (text.includes('*') || text.includes('_') || text.includes('`'))) {
     messageOptions.parse_mode = 'Markdown';
   }
 
@@ -72,10 +63,13 @@ async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
 
 // ==================== ПРИВЕТСТВИЕ ====================
 bot.onText(/\/start/, async (msg) => {
+  // Удаляем только сообщение с командой /start
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   await sendMessageWithPersistentKeyboard(msg.chat.id,
     `👋 Привет, ${msg.from.first_name}!\n\n` +
     `🎛️ *СИСТЕМА МОНИТОРИНГА ТУРБИН*\n\n` +
-    `Используйте кнопки ниже для навигации:`,
+    `Используйте кнопки ниже для работы с системой:`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -118,8 +112,6 @@ bot.on('photo', async (msg) => {
     const file = await bot.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
 
-    // Используем axios вместо fetch (более стабильно)
-    const axios = require('axios');
     const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
 
@@ -153,77 +145,76 @@ bot.on('photo', async (msg) => {
 
 // ==================== КОНТАКТЫ СОТРУДНИКОВ ====================
 bot.onText(/👥 Контакты сотрудников/, async (msg) => {
-  try {
-    const filePath = path.join(DATA_DIR, 'contacts.json');
-    const data = await fs.readFile(filePath, 'utf8');
-    const contacts = JSON.parse(data);
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
 
-    let message = `📞 *Контакты для ${msg.from.first_name}*\n\n`;
-
-    contacts.forEach((contact, index) => {
-      message += `*${index + 1}. ${contact.name}*\n`;
-      message += `   🏢 ${contact.position}\n`;
-      message += `   📱 ${contact.phone}\n`;
-      if (contact.shift) message += `   🕐 ${contact.shift}\n`;
-      if (contact.email) message += `   📧 ${contact.email}\n`;
-      message += `\n`;
-    });
-
-    const contactsMsg = await sendMessageWithPersistentKeyboard(msg.chat.id, message, {
-      parse_mode: 'Markdown'
-    });
-
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, contactsMsg.message_id);
-    }, 30000);
-
-  } catch (error) {
-    console.error('Ошибка загрузки контактов:', error);
-
-    // Создаем файл с контактами по умолчанию
-    if (error.code === 'ENOENT') {
-      const defaultContacts = [
-        {
-          "name": "Иванов Иван Иванович",
-          "position": "Старший инженер",
-          "phone": "+7 (999) 123-45-67",
-          "shift": "Дневная смена",
-          "email": "ivanov@company.com"
-        },
-        {
-          "name": "Петров Петр Петрович",
-          "position": "Оператор турбины",
-          "phone": "+7 (999) 987-65-43",
-          "shift": "Ночная смена",
-          "email": "petrov@company.com"
-        }
-      ];
-
-      try {
-        await fs.mkdir(DATA_DIR, { recursive: true });
-        await fs.writeFile(path.join(DATA_DIR, 'contacts.json'), JSON.stringify(defaultContacts, null, 2));
-
-        // Показываем контакты снова
-        bot.onText(/👥 Контакты сотрудников/, async (msg) => {
-          // ... повторный вызов ...
-        });
-      } catch (writeError) {
-        console.error('Ошибка создания файла контактов:', writeError);
-      }
+  // Ваши контакты
+  const contacts = [
+    {
+      "name": "Иванов Иван Иванович",
+      "position": "Старший инженер",
+      "phone": "+7 (999) 123-45-67",
+      "shift": "Дневная смена",
+      "email": "ivanov@company.com"
+    },
+    {
+      "name": "Петров Петр Петрович",
+      "position": "Оператор турбины",
+      "phone": "+7 (999) 987-65-43",
+      "shift": "Ночная смена",
+      "email": "petrov@company.com"
+    },
+    {
+      "name": "Сидорова Анна Сергеевна",
+      "position": "Техник-наладчик",
+      "phone": "+7 (999) 456-78-90",
+      "shift": "Дневная смена",
+      "email": "sidorova@company.com"
+    },
+    {
+      "name": "Козлов Алексей Владимирович",
+      "position": "Инженер КИПиА",
+      "phone": "+7 (999) 135-79-24",
+      "shift": "Ночная смена",
+      "email": "kozlov@company.com"
+    },
+    {
+      "name": "Николаева Мария Петровна",
+      "position": "Начальник смены",
+      "phone": "+7 (999) 246-80-12",
+      "shift": "Сменный график",
+      "email": "nikolaeva@company.com"
     }
+  ];
 
-    const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
-      `📞 ${msg.from.first_name}, контакты загружаются...`
-    );
+  let message = `📞 *Контакты сотрудников*\n\n`;
 
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
-    }, 10000);
-  }
+  contacts.forEach((contact, index) => {
+    message += `*${index + 1}. ${contact.name}*\n`;
+    message += `   🏢 ${contact.position}\n`;
+    message += `   📱 ${contact.phone}\n`;
+    if (contact.shift) message += `   🕐 ${contact.shift}\n`;
+    if (contact.email) message += `   📧 ${contact.email}\n`;
+    message += `\n`;
+  });
+
+  message += `\n_Контакты автоматически удалятся через 30 секунд_`;
+
+  const contactsMsg = await sendMessageWithPersistentKeyboard(msg.chat.id, message, {
+    parse_mode: 'Markdown'
+  });
+
+  // Удаляем контакты через 30 секунд
+  setTimeout(() => {
+    safeDeleteMessage(msg.chat.id, contactsMsg.message_id);
+  }, 30000);
 });
 
 // ==================== ГРАФИКИ ====================
 bot.onText(/📅 График текущего месяца/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const filePath = path.join(DATA_DIR, 'schedule_current.jpg');
 
   try {
@@ -231,10 +222,12 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
     const photoBuffer = await fs.readFile(filePath);
 
     const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
-      caption: `📅 График для ${msg.from.first_name}`,
-      reply_markup: MAIN_KEYBOARD
+      caption: `📅 График текущего месяца\n\n_Автоматически удалится через 30 секунд_`,
+      reply_markup: MAIN_KEYBOARD,
+      parse_mode: 'Markdown'
     });
 
+    // Удаляем график через 30 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, photoMsg.message_id);
     }, 30000);
@@ -255,6 +248,9 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
 });
 
 bot.onText(/🔄 График на цикл/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const filePath = path.join(DATA_DIR, 'schedule_cycle.jpg');
 
   try {
@@ -262,10 +258,12 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
     const photoBuffer = await fs.readFile(filePath);
 
     const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
-      caption: `🔄 График для ${msg.from.first_name}`,
-      reply_markup: MAIN_KEYBOARD
+      caption: `🔄 График на цикл\n\n_Автоматически удалится через 30 секунд_`,
+      reply_markup: MAIN_KEYBOARD,
+      parse_mode: 'Markdown'
     });
 
+    // Удаляем график через 30 секунд
     setTimeout(() => {
       safeDeleteMessage(msg.chat.id, photoMsg.message_id);
     }, 30000);
@@ -286,6 +284,9 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
 
 // ==================== ОБОРОТЫ ТУРБИНЫ ====================
 bot.onText(/⚙️ Обороты турбины/, async (msg) => {
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   const userId = msg.from.id;
   const chatId = msg.chat.id;
   const userName = msg.from.first_name;
@@ -313,11 +314,12 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
 
   // Отправляем сообщение с мониторингом
   const turbineMsg = await bot.sendMessage(chatId,
-    `⚙️ *Мониторинг для ${userName}*\n\n` +
+    `⚙️ *Мониторинг оборотов турбины*\n` +
+    `👤 Для: ${userName}\n\n` +
     `🎯 Текущие обороты: *${initialRPM} об/мин*\n\n` +
     `📊 [${createProgressBar(initialRPM)}] ${Math.round(((initialRPM - 6896) / (6960 - 6896)) * 100)}%\n\n` +
-    `ℹ️ Сообщение удалится через 30 секунд`,
-    { parse_mode: 'Markdown', reply_markup: MAIN_KEYBOARD }
+    `_Автоматически удалится через 30 секунд_`,
+    { parse_mode: 'Markdown' }
   );
 
   const messageId = turbineMsg.message_id;
@@ -343,10 +345,11 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
 
     try {
       await bot.editMessageText(
-        `⚙️ *Мониторинг для ${userName}*\n\n` +
+        `⚙️ *Мониторинг оборотов турбины*\n` +
+        `👤 Для: ${userName}\n\n` +
         `🎯 Текущие обороты: *${newRPM} об/мин*\n\n` +
         `📊 [${createProgressBar(newRPM)}] ${Math.round(((newRPM - 6896) / (6960 - 6896)) * 100)}%\n\n` +
-        `ℹ️ Сообщение удалится через ${Math.max(0, 30 - Math.floor((Date.now() - startTime) / 1000))} секунд`,
+        `_Автоматически удалится через ${Math.max(0, 30 - Math.floor((Date.now() - startTime) / 1000))} секунд_`,
         {
           chat_id: chatId,
           message_id: messageId,
@@ -381,10 +384,17 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
 
 // ==================== АДМИН КОМАНДЫ ====================
 bot.onText(/\/admin/, async (msg) => {
+  // Удаляем сообщение с командой
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
   if (msg.from.id.toString() !== ADMIN_ID) {
-    await sendMessageWithPersistentKeyboard(msg.chat.id,
+    const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `⛔ У вас нет прав администратора`
     );
+
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
+    }, 5000);
     return;
   }
 
@@ -395,7 +405,8 @@ bot.onText(/\/admin/, async (msg) => {
     `👤 Ваш ID: ${msg.from.id}\n\n` +
     `*Команды:*\n` +
     `• Отправьте фото с подписью "текущий" - загрузить график текущего месяца\n` +
-    `• Отправьте фото с подписью "цикл" - загрузить график на цикл`,
+    `• Отправьте фото с подписью "цикл" - загрузить график на цикл\n\n` +
+    `*Кнопки всегда видны в поле ввода текста*`,
     { parse_mode: 'Markdown' }
   );
 
@@ -404,16 +415,63 @@ bot.onText(/\/admin/, async (msg) => {
   }, 15000);
 });
 
-// ==================== ОБЩИЕ СООБЩЕНИЯ ====================
+// ==================== ОБЩИЕ СООБЩЕНИЯ В ГРУППЕ ====================
 bot.on('message', async (msg) => {
   // Пропускаем сообщения от бота
   if (msg.from.is_bot) return;
 
-  // Пропускаем команды и фото
-  if (msg.text?.startsWith('/')) return;
-  if (msg.photo) return;
+  // ОБЫЧНЫЕ СООБЩЕНИЯ В ГРУППЕ НЕ УДАЛЯЕМ!
+  // Это общий чат для общения
 
-  // Пропускаем кнопки главного меню
+  // Но если это сообщение с кнопкой - удаляем сразу
+  if (msg.text && (
+    msg.text.includes('📅 График текущего месяца') ||
+    msg.text.includes('🔄 График на цикл') ||
+    msg.text.includes('👥 Контакты сотрудников') ||
+    msg.text.includes('⚙️ Обороты турбины')
+  )) {
+    // Удаляем сообщение с кнопкой (но НЕ обычные сообщения пользователей!)
+    // Этот код уже обрабатывается в соответствующих обработчиках выше
+    return;
+  }
+});
+
+// ==================== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ГРУППЫ ====================
+bot.on('new_chat_members', (msg) => {
+  const newMembers = msg.new_chat_members;
+
+  newMembers.forEach(member => {
+    if (member.id.toString() === bot.token.split(':')[0]) return;
+
+    setTimeout(() => {
+      sendMessageWithPersistentKeyboard(msg.chat.id,
+        `👋 Добро пожаловать в группу, *${member.first_name}*!\n\n` +
+        `*Я бот-помощник этой группы.*\n\n` +
+        `📋 *Что я умею:*\n` +
+        `• Показывать графики работы 📅\n` +
+        `• Хранить контакты сотрудников 👥\n` +
+        `• Показывать обороты турбины ⚙️\n\n` +
+        `*Кнопки всегда видны в поле ввода текста*\n` +
+        `*Приятного общения в группе!*`,
+        { parse_mode: 'Markdown' }
+      );
+    }, 1000);
+  });
+});
+
+// ==================== ВСЕГДА ВОЗВРАЩАЕМ КНОПКИ ====================
+// При любом сообщении отправляем "невидимое" сообщение с клавиатурой
+// чтобы обновить интерфейс пользователя
+bot.on('message', async (msg) => {
+  if (msg.from.is_bot) return;
+
+  // Не отправляем клавиатуру на фото от админа
+  if (msg.photo && msg.from.id.toString() === ADMIN_ID) return;
+
+  // Не отправляем клавиатуру на команды
+  if (msg.text?.startsWith('/')) return;
+
+  // Не отправляем клавиатуру на кнопки меню
   if (msg.text && (
     msg.text.includes('📅 График текущего месяца') ||
     msg.text.includes('🔄 График на цикл') ||
@@ -423,17 +481,21 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Для обычных текстовых сообщений показываем подсказку
-  if (msg.text) {
-    const hintMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
-      `💡 ${msg.from.first_name}, используйте кнопки меню для навигации`
-    );
+  // Для обычных сообщений пользователей - отправляем скрытое сообщение с клавиатурой
+  // Это гарантирует, что кнопки всегда будут видны
+  setTimeout(async () => {
+    try {
+      // Отправляем сообщение с клавиатурой и сразу удаляем его
+      const keyboardMsg = await bot.sendMessage(msg.chat.id, ' ', {
+        reply_markup: MAIN_KEYBOARD
+      });
 
-    setTimeout(() => {
-      safeDeleteMessage(msg.chat.id, hintMsg.message_id);
-      safeDeleteMessage(msg.chat.id, msg.message_id);
-    }, 3000);
-  }
+      // Сразу удаляем это сообщение
+      await safeDeleteMessage(msg.chat.id, keyboardMsg.message_id);
+    } catch (error) {
+      // Игнорируем ошибки
+    }
+  }, 100);
 });
 
 // ==================== ПРОВЕРКА ФАЙЛОВ ПРИ ЗАПУСКЕ ====================
@@ -443,31 +505,6 @@ async function checkFilesOnStartup() {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
     console.log(`✅ Папка данных: ${DATA_DIR}`);
-
-    const contactsPath = path.join(DATA_DIR, 'contacts.json');
-    try {
-      await fs.access(contactsPath);
-      console.log('✅ contacts.json найден');
-    } catch {
-      const defaultContacts = [
-        {
-          "name": "Иванов Иван Иванович",
-          "position": "Старший инженер",
-          "phone": "+7 (999) 123-45-67",
-          "shift": "Дневная смена",
-          "email": "ivanov@company.com"
-        },
-        {
-          "name": "Петров Петр Петрович",
-          "position": "Оператор турбины",
-          "phone": "+7 (999) 987-65-43",
-          "shift": "Ночная смена",
-          "email": "petrov@company.com"
-        }
-      ];
-      await fs.writeFile(contactsPath, JSON.stringify(defaultContacts, null, 2));
-      console.log('✅ contacts.json создан по умолчанию');
-    }
 
     const images = ['schedule_current.jpg', 'schedule_cycle.jpg'];
     for (const image of images) {
@@ -488,11 +525,11 @@ async function checkFilesOnStartup() {
 // ==================== ЗАПУСК БОТА ====================
 checkFilesOnStartup().then(() => {
   console.log('\n✅ Бот готов к работе!');
-  console.log('🎯 Главное меню всегда активно');
-  console.log('⏱️ Автоудаление сообщений:');
-  console.log('  • Мониторинг турбины: 30 секунд');
-  console.log('  • Контакты/графики: 30 секунд');
-  console.log('  • Подсказки: 3 секунды');
+  console.log('🎯 Кнопки ВСЕГДА в поле ввода текста');
+  console.log('🗑️ Удаление:');
+  console.log('  • Сообщения с кнопками - сразу');
+  console.log('  • Графики/контакты/мониторинг - через 30 секунд');
+  console.log('  • Обычные сообщения в чате - НЕ удаляются');
   console.log('👑 Администратор:', ADMIN_ID);
   console.log('='.repeat(50));
 
