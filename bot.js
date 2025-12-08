@@ -8,6 +8,11 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8533299703:AAGxj_5pjBFrmuYQnXwM
 const ADMIN_ID = '401369992';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 
+// Глобальные переменные
+let BOT_ID = null;
+const userTimers = new Map();
+const lastKeyboardUpdate = new Map();
+
 console.log('🚀 Бот запущен');
 console.log('👑 Админ ID:', ADMIN_ID);
 console.log('📁 Папка данных:', DATA_DIR);
@@ -16,7 +21,10 @@ console.log('📁 Папка данных:', DATA_DIR);
 const MAIN_KEYBOARD = {
   keyboard: [
     ['📅 График текущего месяца'],
-    ['🔄 График на цикл'],
+    ['🔄 График на квартал'],
+    ['🤓График экзаменов 2026'],
+    ['🚋Расписание трамвая'],
+    ['🛩️График отпусков 2026'],
     ['👥 Контакты сотрудников'],
     ['⚙️ Обороты турбины']
   ],
@@ -32,16 +40,14 @@ const bot = new TelegramBot(TOKEN, {
   }
 });
 
-// ==================== ХРАНИЛИЩА ====================
-const userTimers = new Map();
-
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 async function safeDeleteMessage(chatId, messageId) {
   try {
     await bot.deleteMessage(chatId, messageId);
   } catch (error) {
-    // Игнорируем ошибки "сообщение не найдено"
-    if (!error.message.includes('message to delete not found')) {
+    // Игнорируем ошибки "сообщение не найдено" (английская и русская версии)
+    if (!error.message.includes('message to delete not found') &&
+      !error.message.includes('сообщение для удаления не найдено')) {
       console.log(`⚠️ Не удалось удалить сообщение ${messageId}:`, error.message);
     }
   }
@@ -63,23 +69,23 @@ async function sendMessageWithPersistentKeyboard(chatId, text, options = {}) {
 
 // ==================== ПРИВЕТСТВИЕ ====================
 bot.onText(/\/start/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем только сообщение с командой /start
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
   const welcomeMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
     `👋 Привет, ${msg.from.first_name}!\n\n` +
-
-    `Используйте кнопки ниже для работы с системой:`,+
-
-      `Не удаляй это сообщение, а то меню исчезнет`,
+    `Используйте кнопки ниже для работы с системой:\n\n` +
+    `⚠️ *Не удаляйте это сообщение, иначе меню исчезнет*`,
     { parse_mode: 'Markdown' }
   );
-
-
 });
 
 // ==================== ЗАГРУЗКА КАРТИНОК АДМИНИСТРАТОРОМ ====================
 bot.on('photo', async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   if (msg.from.id.toString() !== ADMIN_ID) {
     console.log(`⛔ Попытка загрузки от не-админа: ${msg.from.id}`);
     return;
@@ -93,14 +99,27 @@ bot.on('photo', async (msg) => {
   if (caption.includes('текущий') || caption.includes('current')) {
     fileName = 'schedule_current.jpg';
     description = 'График текущего месяца';
-  } else if (caption.includes('цикл') || caption.includes('cycle')) {
+  } else if (caption.includes('квартал') || caption.includes('cycle')) {
     fileName = 'schedule_cycle.jpg';
-    description = 'График на цикл';
-  } else {
+    description = 'График на квартал';
+  } else if (caption.includes('экзамены') || caption.includes('exams')) {
+    fileName = 'schedule_exams.jpg';
+    description = 'График экзаменов';
+  } else if (caption.includes('трамвай') || caption.includes('tram')) {
+    fileName = 'schedule_tram.jpg';
+    description = 'Расписание трамвая';
+  } else if (caption.includes('отпуск') || caption.includes('vacation')) {
+    fileName = 'schedule_vocation.jpg';
+    description = 'График отпусков';
+  }
+  else {
     const askMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `📝 Укажите в подписи к фото:\n` +
       `• "текущий" - для графика текущего месяца\n` +
-      `• "цикл" - для графика на цикл\n\n` +
+      `• "квартал" - для графика на квартал\n\n` +
+      `• "экзамены" - для графика экзаменов\n\n` +
+      `• "трамвай" - для расписания трамваев\n\n` +
+      `• "отпуск" - для графика отпусков\n\n` +
       `Отправьте фото еще раз с нужной подписью.`
     );
 
@@ -149,10 +168,12 @@ bot.on('photo', async (msg) => {
 
 // ==================== КОНТАКТЫ СОТРУДНИКОВ ====================
 bot.onText(/👥 Контакты сотрудников/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
-  // Ваши контакты
+  // Исправленные контакты
   const contacts = [
     {
       "name": "Полещук Виктор Васильевич",
@@ -160,7 +181,6 @@ bot.onText(/👥 Контакты сотрудников/, async (msg) => {
       "phone": "+375 29 720-99-64",
       "shift": "1",
       "telegram": ""
-
     },
     {
       "name": "Сергиюк Дмитрий Анатольевич",
@@ -171,118 +191,133 @@ bot.onText(/👥 Контакты сотрудников/, async (msg) => {
     },
     {
       "name": "Быховский Сергей Николаевич",
-      "position": "Машинист(подменный старший машинист)",
+      "position": "Машинист (подменный старший машинист)",
       "phone": "+375 29 734-82-07",
       "shift": "1",
       "telegram": ""
     },
     {
       "name": "Мельник Игорь Яковлевич",
-      "position": "Страший машинист",
+      "position": "Старший машинист",
       "phone": "+375 29 838-55-84",
       "shift": "2",
       "telegram": ""
     },
     {
       "name": "Гаркуша Денис Александрович",
-      "position": "Машинист(подменный старший машинст)",
+      "position": "Машинист (подменный старший машинист)",
       "phone": "+375 29 738-53-84",
       "shift": "2",
       "telegram": ""
     },
     {
       "name": "Близнец Евгений Сергеевич",
-      "position": "Машинст",
+      "position": "Машинист",
       "phone": "+375 44 729-42-58",
       "shift": "2",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Пикун Андрей Алексеевич",
       "position": "Старший машинист",
       "phone": "+375 29 731-11-26",
       "shift": "3",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Гадлевский Игорь Николаевич",
-      "position": "Машинист(подменный старший машинст)",
+      "position": "Машинист (подменный старший машинист)",
       "phone": "+375 29 252-17-44",
       "shift": "3",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Стишенок Евгений Владимирович",
       "position": "Машинист",
       "phone": "+375 33 653-65-07",
       "shift": "3",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Тюсов Евгений Владимирович",
       "position": "Старший машинист",
       "phone": "+375 29 233-17-83",
       "shift": "4",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Дашкевич Василий Иванович",
       "position": "Машинист",
       "phone": "+375 29 715-28-35",
       "shift": "4",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Капитан Денис Владимирович",
-      "position": "Машинист(подменный механик)",
+      "position": "Машинист (подменный механик)",
       "phone": "+375 29 736-13-73",
       "shift": "4",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Когут Виталий Фёдорович",
       "position": "Старший машинист",
       "phone": "+375 29 739-27-34",
       "shift": "5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Лебединский Иван Сергеевич",
       "position": "Машинист",
       "phone": "+375 29 738-48-58",
       "shift": "5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Роговик Дмитрий Витальевич",
       "position": "Машинист",
       "phone": "+375 29 832-44-51",
       "shift": "5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Хитрик Илья Николаевич",
-      "position": "Подменный машинст(подменный механик)",
+      "position": "Подменный машинист (подменный механик)",
       "phone": "+375 29 201-50-76",
       "shift": "1,2,3,4,5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Лагошенко Дмитрий Григорьевич",
-      "position": "Подменный машинст",
+      "position": "Подменный машинист",
       "phone": "+375 33 682-14-61",
       "shift": "1,2,3,4,5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Коробкин Егор Сергеевич",
-      "position": "Подменный машинст",
+      "position": "Подменный машинист",
       "phone": "+375 33 904-29-35",
       "shift": "1,2,3,4,5",
       "telegram": ""
-    },{
+    },
+    {
       "name": "Ходик Евгений Александрович",
       "position": "Механик",
       "phone": "+375 29 809-05-81",
       "shift": "",
       "telegram": ""
-    },{
-      "name": "Гаврук Александр Николавеич",
+    },
+    {
+      "name": "Гаврук Александр Николаевич",
       "position": "Начальник ЛК6У-№1",
       "phone": "+375 29 738-01-15",
       "shift": "",
       "telegram": ""
-    },{
-      "name": "Пилипович ",
-      "position": " Подменный начальник ЛК6У-№1",
+    },
+    {
+      "name": "Пилипович",
+      "position": "Подменный начальник ЛК6У-№1",
       "phone": "",
       "shift": "",
       "telegram": ""
@@ -295,7 +330,7 @@ bot.onText(/👥 Контакты сотрудников/, async (msg) => {
     message += `*${index + 1}. ${contact.name}*\n`;
     message += `   🏢 ${contact.position}\n`;
     message += `   📱 ${contact.phone}\n`;
-    if (contact.shift) message += `   🕐 ${contact.shift}\n`;
+    if (contact.shift) message += `   🕐 Смена: ${contact.shift}\n`;
     if (contact.telegram) message += `   📧 ${contact.telegram}\n`;
     message += `\n`;
   });
@@ -314,6 +349,8 @@ bot.onText(/👥 Контакты сотрудников/, async (msg) => {
 
 // ==================== ГРАФИКИ ====================
 bot.onText(/📅 График текущего месяца/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
@@ -349,7 +386,9 @@ bot.onText(/📅 График текущего месяца/, async (msg) => {
   }
 });
 
-bot.onText(/🔄 График на цикл/, async (msg) => {
+bot.onText(/🔄 График на квартал/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
@@ -360,7 +399,7 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
     const photoBuffer = await fs.readFile(filePath);
 
     const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
-      caption: `🔄 График на цикл\n\n_Автоматически удалится через 30 секунд_`,
+      caption: `🔄 График на квартал\n\n_Автоматически удалится через 30 секунд_`,
       reply_markup: MAIN_KEYBOARD,
       parse_mode: 'Markdown'
     });
@@ -374,7 +413,118 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
     const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
       `🔄 ${msg.from.first_name}, график еще не загружен\n\n` +
       `*Как загрузить:*\n` +
-      `Администратор должен отправить фото с подписью "цикл"`,
+      `Администратор должен отправить фото с подписью "квартал"`,
+      { parse_mode: 'Markdown' }
+    );
+
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
+    }, 10000);
+  }
+});
+
+bot.onText(/🤓График экзаменов 2026/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
+  const filePath = path.join(DATA_DIR, 'schedule_exams.jpg');
+
+  try {
+    await fs.access(filePath);
+    const photoBuffer = await fs.readFile(filePath);
+
+    const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
+      caption: `🤓 График экзаменов 2026\n\n_Автоматически удалится через 30 секунд_`,
+      reply_markup: MAIN_KEYBOARD,
+      parse_mode: 'Markdown'
+    });
+
+    // Удаляем график через 30 секунд
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, photoMsg.message_id);
+    }, 30000);
+
+  } catch (error) {
+    const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
+      `🤓 ${msg.from.first_name}, график еще не загружен\n\n` +
+      `*Как загрузить:*\n` +
+      `Администратор должен отправить фото с подписью "экзамены"`,
+      { parse_mode: 'Markdown' }
+    );
+
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
+    }, 10000);
+  }
+});
+
+bot.onText(/🚋Расписание трамвая/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
+  const filePath = path.join(DATA_DIR, 'schedule_tram.jpg');
+
+  try {
+    await fs.access(filePath);
+    const photoBuffer = await fs.readFile(filePath);
+
+    const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
+      caption: `🚋 Расписание трамвая\n\n_Автоматически удалится через 30 секунд_`,
+      reply_markup: MAIN_KEYBOARD,
+      parse_mode: 'Markdown'
+    });
+
+    // Удаляем график через 30 секунд
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, photoMsg.message_id);
+    }, 30000);
+
+  } catch (error) {
+    const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
+      `🚋 ${msg.from.first_name}, расписание еще не загружено\n\n` +
+      `*Как загрузить:*\n` +
+      `Администратор должен отправить фото с подписью "трамвай"`,
+      { parse_mode: 'Markdown' }
+    );
+
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, errorMsg.message_id);
+    }, 10000);
+  }
+});
+
+bot.onText(/🛩️График отпусков 2026/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
+  // Удаляем сообщение с кнопкой СРАЗУ
+  await safeDeleteMessage(msg.chat.id, msg.message_id);
+
+  const filePath = path.join(DATA_DIR, 'schedule_vocation.jpg');
+
+  try {
+    await fs.access(filePath);
+    const photoBuffer = await fs.readFile(filePath);
+
+    const photoMsg = await bot.sendPhoto(msg.chat.id, photoBuffer, {
+      caption: `🛩️ График отпусков 2026\n\n_Автоматически удалится через 30 секунд_`,
+      reply_markup: MAIN_KEYBOARD,
+      parse_mode: 'Markdown'
+    });
+
+    // Удаляем график через 30 секунд
+    setTimeout(() => {
+      safeDeleteMessage(msg.chat.id, photoMsg.message_id);
+    }, 30000);
+
+  } catch (error) {
+    const errorMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
+      `🛩️ ${msg.from.first_name}, график еще не загружен\n\n` +
+      `*Как загрузить:*\n` +
+      `Администратор должен отправить фото с подписью "отпуск"`,
       { parse_mode: 'Markdown' }
     );
 
@@ -386,6 +536,8 @@ bot.onText(/🔄 График на цикл/, async (msg) => {
 
 // ==================== ОБОРОТЫ ТУРБИНЫ ====================
 bot.onText(/⚙️ Обороты турбины/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем сообщение с кнопкой СРАЗУ
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
@@ -444,6 +596,7 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
   // Обновление каждые 2 секунды
   const updateTimer = setInterval(async () => {
     const newRPM = generateRPM();
+    const secondsLeft = Math.max(0, 30 - Math.floor((Date.now() - startTime) / 1000));
 
     try {
       await bot.editMessageText(
@@ -451,7 +604,7 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
         `👤 Для: ${userName}\n\n` +
         `🎯 Текущие обороты: *${newRPM} об/мин*\n\n` +
         `📊 [${createProgressBar(newRPM)}] ${Math.round(((newRPM - 6896) / (6960 - 6896)) * 100)}%\n\n` +
-        `_Автоматически удалится через ${Math.max(0, 30 - Math.floor((Date.now() - startTime) / 1000))} секунд_`,
+        `_Автоматически удалится через ${secondsLeft} секунд_`,
         {
           chat_id: chatId,
           message_id: messageId,
@@ -460,7 +613,7 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
       );
 
       // Останавливаем обновления за 5 секунд до удаления
-      if (Date.now() - startTime >= 25000) {
+      if (secondsLeft <= 5) {
         clearInterval(updateTimer);
         const userData = userTimers.get(key);
         if (userData) {
@@ -486,6 +639,8 @@ bot.onText(/⚙️ Обороты турбины/, async (msg) => {
 
 // ==================== АДМИН КОМАНДЫ ====================
 bot.onText(/\/admin/, async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Удаляем сообщение с командой
   await safeDeleteMessage(msg.chat.id, msg.message_id);
 
@@ -507,7 +662,10 @@ bot.onText(/\/admin/, async (msg) => {
     `👤 Ваш ID: ${msg.from.id}\n\n` +
     `*Команды:*\n` +
     `• Отправьте фото с подписью "текущий" - загрузить график текущего месяца\n` +
-    `• Отправьте фото с подписью "цикл" - загрузить график на цикл\n\n` +
+    `• Отправьте фото с подписью "квартал" - загрузить график на квартал\n\n` +
+    `• Отправьте фото с подписью "экзамены" - загрузить график для экзаменов\n\n` +
+    `• Отправьте фото с подписью "трамвай" - загрузить расписание для трамвая\n\n` +
+    `• Отправьте фото с подписью "отпуск" - загрузить график для отпуска\n\n` +
     `*Кнопки всегда видны в поле ввода текста*`,
     { parse_mode: 'Markdown' }
   );
@@ -518,11 +676,14 @@ bot.onText(/\/admin/, async (msg) => {
 });
 
 // ==================== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ГРУППЫ ====================
-bot.on('new_chat_members', (msg) => {
+bot.on('new_chat_members', async (msg) => {
+  if (!msg || !msg.chat || !msg.new_chat_members) return;
+
   const newMembers = msg.new_chat_members;
 
   newMembers.forEach(member => {
-    if (member.id.toString() === bot.token.split(':')[0]) return;
+    // Проверяем, что это не сам бот
+    if (BOT_ID && member.id.toString() === BOT_ID) return;
 
     setTimeout(async () => {
       const welcomeMsg = await sendMessageWithPersistentKeyboard(msg.chat.id,
@@ -533,9 +694,8 @@ bot.on('new_chat_members', (msg) => {
         `• Хранить контакты сотрудников 👥\n` +
         `• Показывать обороты турбины ⚙️\n\n` +
         `*Кнопки всегда видны в поле ввода текста*\n` +
-        `*Приятного общения в группе!*`,
-        +
-          `*Для просмотра функционала введите /start*`,
+        `*Приятного общения в группе!*\n\n` +
+        `*Для просмотра функционала введите /start*`,
         { parse_mode: 'Markdown' }
       );
 
@@ -549,6 +709,8 @@ bot.on('new_chat_members', (msg) => {
 
 // ==================== ОБЩИЕ СООБЩЕНИЯ В ГРУППЕ ====================
 bot.on('message', async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
+
   // Пропускаем сообщения от бота
   if (msg.from.is_bot) return;
 
@@ -559,7 +721,10 @@ bot.on('message', async (msg) => {
   // (это уже обрабатывается в соответствующих обработчиках выше)
   if (msg.text && (
     msg.text.includes('📅 График текущего месяца') ||
-    msg.text.includes('🔄 График на цикл') ||
+    msg.text.includes('🔄 График на квартал') ||
+    msg.text.includes('🤓График экзаменов 2026') ||
+    msg.text.includes('🚋Расписание трамвая') ||
+    msg.text.includes('🛩️График отпусков 2026') ||
     msg.text.includes('👥 Контакты сотрудников') ||
     msg.text.includes('⚙️ Обороты турбины')
   )) {
@@ -569,9 +734,8 @@ bot.on('message', async (msg) => {
 });
 
 // ==================== ВСЕГДА ВОЗВРАЩАЕМ КНОПКИ ====================
-// При любом сообщении отправляем "невидимое" сообщение с клавиатурой
-// чтобы обновить интерфейс пользователя
 bot.on('message', async (msg) => {
+  if (!msg || !msg.chat || !msg.from) return;
   if (msg.from.is_bot) return;
 
   // Не отправляем клавиатуру на фото от админа
@@ -583,7 +747,10 @@ bot.on('message', async (msg) => {
   // Не отправляем клавиатуру на кнопки меню
   if (msg.text && (
     msg.text.includes('📅 График текущего месяца') ||
-    msg.text.includes('🔄 График на цикл') ||
+    msg.text.includes('🔄 График на квартал') ||
+    msg.text.includes('🤓График экзаменов 2026') ||
+    msg.text.includes('🚋Расписание трамвая') ||
+    msg.text.includes('🛩️График отпусков 2026') ||
     msg.text.includes('👥 Контакты сотрудников') ||
     msg.text.includes('⚙️ Обороты турбины')
   )) {
@@ -592,19 +759,28 @@ bot.on('message', async (msg) => {
 
   // Для обычных сообщений пользователей - отправляем скрытое сообщение с клавиатурой
   // Это гарантирует, что кнопки всегда будут видны
-  setTimeout(async () => {
-    try {
-      // Отправляем сообщение с клавиатурой и сразу удаляем его
-      const keyboardMsg = await bot.sendMessage(msg.chat.id, ' ', {
-        reply_markup: MAIN_KEYBOARD
-      });
+  const key = `${msg.chat.id}_${msg.from.id}`;
+  const now = Date.now();
+  const lastUpdate = lastKeyboardUpdate.get(key) || 0;
 
-      // Сразу удаляем это сообщение
-      await safeDeleteMessage(msg.chat.id, keyboardMsg.message_id);
-    } catch (error) {
-      // Игнорируем ошибки
-    }
-  }, 100);
+  // Не чаще чем раз в 3 секунды
+  if (now - lastUpdate > 3000) {
+    lastKeyboardUpdate.set(key, now);
+
+    setTimeout(async () => {
+      try {
+        // Отправляем сообщение с клавиатурой и сразу удаляем его
+        const keyboardMsg = await bot.sendMessage(msg.chat.id, ' ', {
+          reply_markup: MAIN_KEYBOARD
+        });
+
+        // Сразу удаляем это сообщение
+        await safeDeleteMessage(msg.chat.id, keyboardMsg.message_id);
+      } catch (error) {
+        // Игнорируем ошибки
+      }
+    }, 100);
+  }
 });
 
 // ==================== ПРОВЕРКА ФАЙЛОВ ПРИ ЗАПУСКЕ ====================
@@ -615,12 +791,20 @@ async function checkFilesOnStartup() {
     await fs.mkdir(DATA_DIR, { recursive: true });
     console.log(`✅ Папка данных: ${DATA_DIR}`);
 
-    const images = ['schedule_current.jpg', 'schedule_cycle.jpg'];
+    const images = [
+      'schedule_current.jpg',
+      'schedule_cycle.jpg',
+      'schedule_exams.jpg',
+      'schedule_tram.jpg',
+      'schedule_vocation.jpg'
+    ];
+
     for (const image of images) {
       const imagePath = path.join(DATA_DIR, image);
       try {
         await fs.access(imagePath);
-        console.log(`✅ ${image} существует`);
+        const stats = await fs.stat(imagePath);
+        console.log(`✅ ${image} существует (${(stats.size / 1024).toFixed(2)} KB)`);
       } catch {
         console.log(`⚠️ ${image} не найден`);
       }
@@ -643,22 +827,31 @@ checkFilesOnStartup().then(() => {
   console.log('👑 Администратор:', ADMIN_ID);
   console.log('='.repeat(50));
 
+  // Получаем информацию о боте
   bot.getMe().then(me => {
+    BOT_ID = me.id.toString();
     console.log(`🤖 Бот: ${me.first_name} (@${me.username})`);
+    console.log(`🆔 ID бота: ${BOT_ID}`);
     console.log(`🔗 Ссылка: https://t.me/${me.username}`);
   }).catch(error => {
     console.error('❌ Ошибка получения информации о боте:', error);
   });
+}).catch(error => {
+  console.error('❌ Ошибка при запуске бота:', error);
+  process.exit(1);
 });
 
 // Обработка остановки
 process.on('SIGINT', () => {
   console.log('\n🛑 Останавливаю бота...');
+
+  // Останавливаем все таймеры
   userTimers.forEach(({ updateTimer, deletionTimer }) => {
     if (updateTimer) clearInterval(updateTimer);
-    if (deletionTimer) clearTimeout(deletionTimer);
-  });
+    if (deletionTimer) clearTimeout(deletionTimer)  });
+
   userTimers.clear();
+  lastKeyboardUpdate.clear();
   console.log('✅ Все таймеры остановлены');
   bot.stopPolling();
   process.exit(0);
@@ -667,8 +860,30 @@ process.on('SIGINT', () => {
 // Обработка ошибок
 bot.on('polling_error', (error) => {
   console.error('❌ Ошибка polling:', error.message);
+
+  // Автоматический перезапуск при некоторых ошибках
+  if (error.code === 'ETELEGRAM' || error.code === 'EFATAL') {
+    console.log('🔄 Попытка перезапуска polling...');
+    setTimeout(() => {
+      bot.startPolling();
+    }, 5000);
+  }
 });
 
 bot.on('error', (error) => {
   console.error('❌ Общая ошибка бота:', error.message);
 });
+
+// Периодическая очистка устаревших записей
+setInterval(() => {
+  const now = Date.now();
+  const tenMinutesAgo = now - 10 * 60 * 1000;
+
+  for (const [key, lastUpdate] of lastKeyboardUpdate.entries()) {
+    if (lastUpdate < tenMinutesAgo) {
+      lastKeyboardUpdate.delete(key);
+    }
+  }
+
+  console.log(`🧹 Очистка: осталось ${lastKeyboardUpdate.size} записей в кэше клавиатур`);
+}, 10 * 60 * 1000);
